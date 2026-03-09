@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Banking Simulator - Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="firebase-config.js"></script>
+    <script src="auth.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h2>Welcome, <span id="userName"></span>!</h2>
+        <button id="logoutBtn" onclick="logout()">Logout</button>
+
+        <!-- Notification bar -->
+        <div id="notificationBar" class="notification"></div>
+
+        <h3>Your Accounts</h3>
+        <div id="accountsList"></div>
+
+        <h3>Create New Account</h3>
+        <select id="newAccountType">
+            <option value="checking">Checking</option>
+            <option value="savings">Savings</option>
+        </select>
+        <input type="number" id="initialDeposit" placeholder="Initial Deposit" min="0" step="0.01" />
+        <button onclick="createAccount()">Create Account</button>
+
+        <h3>Transfer Money</h3>
+        <select id="fromAccount"></select>
+        <select id="toAccount"></select>
+        <input type="number" id="transferAmount" placeholder="Amount" min="0.01" step="0.01" />
+        <input type="text" id="transferDesc" placeholder="Description (optional)" />
+        <button onclick="transfer()">Transfer</button>
+
+        <h3>Recent Transactions</h3>
+        <div id="transactionsList"></div>
+    </div>
+
+    <script>
+        // Protect page: if not logged in, redirect to login
+        requireAuth();
+
+        // Additionally, if user is admin, redirect them to admin page
+        auth.onAuthStateChanged(user => {
+            if (user) {
+                getUserRole(user.uid).then(role => {
+                    if (role === 'admin') {
+                        window.location.href = 'admin.html';
+                    }
+                });
+            }
+        });
+
+        // DOM elements
+        const userNameSpan = document.getElementById('userName');
+        const accountsList = document.getElementById('accountsList');
+        const fromAccountSelect = document.getElementById('fromAccount');
+        const toAccountSelect = document.getElementById('toAccount');
+        const transactionsList = document.getElementById('transactionsList');
+        const notificationBar = document.getElementById('notificationBar');
+
+        let unsubTransactions = null;
+        let currentUser = null;
+
+        auth.onAuthStateChanged(user => {
+            if (user) {
+                currentUser = user;
+                loadUserData(user);
+                setupRealtimeListeners(user);
+            }
+        });
+
+        async function loadUserData(user) {
+            const doc = await db.collection('users').doc(user.uid).get();
+            if (doc.exists) {
+                userNameSpan.textContent = doc.data().displayName;
+            }
+        }
+
+        function setupRealtimeListeners(user) {
+            // Listen to accounts
+            db.collection('accounts')
+                .where('userId', '==', user.uid)
+                .onSnapshot(snapshot => {
+                    const accounts = [];
+                    snapshot.forEach(doc => {
+                        const data = doc.data();
+                        accounts.push({ id: doc.id, ...data });
+                    });
+                    updateAccountsUI(accounts);
+                    listenToTransactions(user.uid);
+                });
+        }
+
+        function listenToTransactions(userId) {
+            if (unsubTransactions) unsubTransactions();
+
+            unsubTransactions = db.collection('transactions')
+                .where('userId', '==', userId)
+                .orderBy('createdAt', 'desc')
+                .limit(20)
+                .onSnapshot(snapshot => {
+                    let html = '';
+                    snapshot.forEach(doc => {
+                        const t = doc.data();
+                        const date = t.createdAt ? t.createdAt.toDate().toLocaleString() : 'Just now';
+                        html += `<div class="transaction">
+                            ${date}: $${t.amount.toFixed(2)} from ${t.fromAccountId.slice(0,6)} to ${t.toAccountId.slice(0,6)} - ${t.description}
+                        </div>`;
+                    });
+                    transactionsList.innerHTML = html || '<p>No transactions yet.</p>';
+                });
+        }
+
+        function updateAccountsUI(accounts) {
+            let accountsHtml = '';
+            accounts.forEach(acc => {
+                accountsHtml += `
+                    <div class="account">
+                        <strong>${acc.accountType}</strong> (${acc.id.slice(0,8)}...)<br>
+                        Balance: $${acc.balance.toFixed(2)}
+                    </div>
+                `;
+            });
+            accountsList.innerHTML = accountsHtml || '<p>No accounts yet.</p>';
+
+            // Populate transfer dropdowns
+            let options = '';
+            accounts.forEach(acc => {
+                options += `<option value="${acc.id}">${acc.accountType} ($${acc.balance.toFixed(2)})</option>`;
+            });
+            fromAccountSelect.innerHTML = options;
+            toAccountSelect.innerHTML = options;
+        }
+
+        async function createAccount() {
+            if (!currentUser) return;
+
+            const type = document.getElementById('newAccountType').value;
+            const initialDeposit = parseFloat(document.getElementById('initialDeposit').value) || 0;
+
+            if (initialDeposit < 0) {
+                alert('Initial deposit cannot be negative');
+                return;
+            }
+
+            try {
+                await db.collection('accounts').add({
+                    userId: currentUser.uid,
+                    accountType: type,
+                    balance: initialDeposit,
+                    currency: 'USD',
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                document.getElementById('initialDeposit').value = '';
+                showNotification('Account created successfully!');
+            } catch (error) {
+                alert(error.message);
+            }
+        }
+
+        async function transfer() {
+            const fromId = fromAccountSelect.value;
+            const toId = toAccountSelect.value;
+            const amount = parseFloat(document.getElementById('transferAmount').value);
+            const description = document.getElementById('transferDesc').value || 'Transfer';
+
+            if (!fromId || !toId) {
+                alert('Please select both accounts');
+                return;
+            }
+            if (fromId === toId) {
+                alert('Cannot transfer to the same account');
+                return;
+            }
+            if (isNaN(amount) || amount <= 0) {
+                alert('Please enter a valid positive amount');
+                return;
+            }
+
+            const fromRef = db.collection('accounts').doc(fromId);
+            const toRef = db.collection('accounts').doc(toId);
+
+            try {
+                await db.runTransaction(async (transaction) => {
+                    const fromDoc = await transaction.get(fromRef);
+                    const toDoc = await transaction.get(toRef);
+
+                    if (!fromDoc.exists || !toDoc.exists) {
+                        throw new Error('One of the accounts does not exist');
+                    }
+
+                    const fromBalance = fromDoc.data().balance;
+                    if (fromBalance < amount) {
+                        throw new Error('Insufficient funds');
+                    }
+
+                    transaction.update(fromRef, { balance: fromBalance - amount });
+                    transaction.update(toRef, { balance: toDoc.data().balance + amount });
+
+                    const transRef = db.collection('transactions').doc();
+                    transaction.set(transRef, {
+                        fromAccountId: fromId,
+                        toAccountId: toId,
+                        amount: amount,
+                        description: description,
+                        status: 'completed',
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        type: 'transfer',
+                        userId: currentUser.uid
+                    });
+                });
+                document.getElementById('transferAmount').value = '';
+                document.getElementById('transferDesc').value = '';
+                showNotification(`Transfer of $${amount.toFixed(2)} completed successfully!`);
+            } catch (error) {
+                alert(error.message);
+            }
+        }
+
+        function showNotification(message) {
+            notificationBar.textContent = message;
+            notificationBar.style.display = 'block';
+            setTimeout(() => {
+                notificationBar.style.display = 'none';
+            }, 5000);
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Banking Simulator - Admin</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="firebase-config.js"></script>
+    <script src="auth.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h2>Admin Dashboard</h2>
+        <button id="logoutBtn" onclick="logout()">Logout</button>
+
+        <div class="admin-section">
+            <h3>All Users</h3>
+            <div id="usersList"></div>
+        </div>
+
+        <div class="admin-section" id="userDetailsSection" style="display:none;">
+            <h3>User Details: <span id="selectedUserName"></span></h3>
+            <button onclick="clearSelectedUser()">Back to Users</button>
+
+            <h4>Accounts</h4>
+            <div id="adminAccountsList"></div>
+
+            <h4>Transactions</h4>
+            <div id="adminTransactionsList"></div>
+        </div>
+    </div>
+
+    <script>
+        // Only allow admins
+        requireAdmin();
+
+        let selectedUserId = null;
+        let unsubUserAccounts = null;
+        let unsubUserTransactions = null;
+
+        // Load all users
+        function loadUsers() {
+            db.collection('users').get().then(snapshot => {
+                let html = '';
+                snapshot.forEach(doc => {
+                    const user = doc.data();
+                    html += `<div class="user-item" onclick="selectUser('${doc.id}', '${user.displayName}')">
+                        ${user.displayName} (${user.email}) - Role: ${user.role}
+                    </div>`;
+                });
+                document.getElementById('usersList').innerHTML = html;
+            });
+        }
+
+        // Select a user to view accounts/transactions
+        function selectUser(userId, userName) {
+            selectedUserId = userId;
+            document.getElementById('selectedUserName').textContent = userName;
+            document.getElementById('userDetailsSection').style.display = 'block';
+
+            // Load accounts for this user
+            if (unsubUserAccounts) unsubUserAccounts();
+            unsubUserAccounts = db.collection('accounts')
+                .where('userId', '==', userId)
+                .onSnapshot(snapshot => {
+                    let html = '';
+                    snapshot.forEach(doc => {
+                        const acc = doc.data();
+                        html += `<div class="account-item" onclick="viewAccountTransactions('${doc.id}')">
+                            ${acc.accountType}: $${acc.balance.toFixed(2)} (${doc.id.slice(0,8)})
+                        </div>`;
+                    });
+                    document.getElementById('adminAccountsList').innerHTML = html || '<p>No accounts.</p>';
+                });
+
+            // Load transactions for this user
+            if (unsubUserTransactions) unsubUserTransactions();
+            unsubUserTransactions = db.collection('transactions')
+                .where('userId', '==', userId)
+                .orderBy('createdAt', 'desc')
+                .limit(20)
+                .onSnapshot(snapshot => {
+                    let html = '';
+                    snapshot.forEach(doc => {
+                        const t = doc.data();
+                        const date = t.createdAt ? t.createdAt.toDate().toLocaleString() : 'Just now';
+                        html += `<div class="transaction">
+                            ${date}: $${t.amount.toFixed(2)} from ${t.fromAccountId.slice(0,6)} to ${t.toAccountId.slice(0,6)} - ${t.description}
+                        </div>`;
+                    });
+                    document.getElementById('adminTransactionsList').innerHTML = html || '<p>No transactions.</p>';
+                });
+        }
+
+        function clearSelectedUser() {
+            selectedUserId = null;
+            document.getElementById('userDetailsSection').style.display = 'none';
+            if (unsubUserAccounts) unsubUserAccounts();
+            if (unsubUserTransactions) unsubUserTransactions();
+        }
+
+        function viewAccountTransactions(accountId) {
+            alert('Account selected: ' + accountId + ' (you can implement detailed view here)');
+        }
+
+        // Initial load
+        auth.onAuthStateChanged(user => {
+            if (user) {
+                loadUsers();
+            }
+        });
+    </script>
+</body>
+</html>
